@@ -36,6 +36,7 @@ CLI
 
 import argparse
 import logging
+import os
 import sys
 import time
 from dataclasses import dataclass, field
@@ -467,8 +468,13 @@ def main() -> int:
         logger.error("Startup checks failed — exiting.")
         return 1
 
-    if args.run_once:
-        logger.info("--run-once: executing single scan")
+    # RUN_ONCE env var lets Railway users trigger a one-time scan by adding
+    # the variable in the dashboard (same UI they use for API keys), without
+    # needing to touch the Start Command in Settings.
+    run_once = args.run_once or bool(os.environ.get("RUN_ONCE"))
+
+    if run_once:
+        logger.info("Running single scan (RUN_ONCE mode)")
         summary = run_scan()
         logger.info(
             "Single scan complete: %d draft(s) triggered, %d email(s) sent",
