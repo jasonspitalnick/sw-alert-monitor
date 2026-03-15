@@ -1,0 +1,40 @@
+# ── Python ─────────────────────────────────────────────────────────────────────
+venv/
+__pycache__/
+*.py[cod]
+*.pyo
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.pytest_cache/
+
+# ── Environment variables (contains real credentials — NEVER commit) ───────────
+.env
+
+# ── Runtime state (persisted in Railway volumes, not in git) ───────────────────
+data/
+
+# ── Generated outputs ──────────────────────────────────────────────────────────
+drafts/
+logs/
+
+# ── macOS ──────────────────────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# ── IDE ────────────────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ── Claude Code ────────────────────────────────────────────────────────────────
+.claude/
+
+# ── Local reference files (not needed by the deployed app) ────────────────────
+Precedents/
+Law Firm List.rtf

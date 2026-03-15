@@ -1,0 +1,9 @@
+[build]
+builder = "dockerfile"
+
+[deploy]
+startCommand = "python -m src.scheduler"
+
+# Restart automatically on crash; give up after 10 consecutive failures
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10
