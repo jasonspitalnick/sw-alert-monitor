@@ -23,3 +23,7 @@ tenacity==9.0.0
 
 # Date parsing
 python-dateutil==2.9.0
+
+# Timezone database (required by zoneinfo on Python < 3.11 / containers
+# without a system-level /usr/share/zoneinfo, e.g. the Playwright base image)
+tzdata==2024.2
