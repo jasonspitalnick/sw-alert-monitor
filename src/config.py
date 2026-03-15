@@ -30,11 +30,9 @@ for _d in (DATA_DIR, DRAFTS_DIR, LOGS_DIR):
 load_dotenv(PROJECT_ROOT / ".env", override=True)
 
 ANTHROPIC_API_KEY: str = os.environ.get("ANTHROPIC_API_KEY", "")
-GMAIL_APP_PASSWORD: str = os.environ.get("GMAIL_APP_PASSWORD", "")
+SENDGRID_API_KEY: str = os.environ.get("SENDGRID_API_KEY", "")
 EMAIL_FROM: str = os.environ.get("EMAIL_FROM", "jason.spitalnick@gmail.com")
 EMAIL_TO: str = os.environ.get("EMAIL_TO", "jspitalnick@swlaw.com")
-SMTP_HOST: str = os.environ.get("SMTP_HOST", "smtp.gmail.com")
-SMTP_PORT: int = int(os.environ.get("SMTP_PORT", "587"))
 
 # ── Scraping ───────────────────────────────────────────────────────────────────
 # Per-page timeout in milliseconds for Playwright
@@ -74,6 +72,6 @@ def validate_env() -> list[str]:
     missing = []
     if not ANTHROPIC_API_KEY:
         missing.append("ANTHROPIC_API_KEY")
-    if not GMAIL_APP_PASSWORD:
-        missing.append("GMAIL_APP_PASSWORD")
+    if not SENDGRID_API_KEY:
+        missing.append("SENDGRID_API_KEY")
     return missing

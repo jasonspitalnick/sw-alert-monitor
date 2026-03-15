@@ -1,13 +1,13 @@
 """
 src/email_delivery.py
-Phase 7 — Gmail SMTP email delivery.
+Phase 7 — Email delivery via SendGrid HTTP API.
 
 Builds and sends the trigger email that delivers a generated draft alert to
 the recipient's inbox.
 
 Email spec (PARAMETERS.md)
 --------------------------
-From:       jason.spitalnick@gmail.com  (Gmail SMTP / app password)
+From:       jason.spitalnick@gmail.com  (SendGrid verified sender)
 To:         jspitalnick@swlaw.com
 Subject:    [DRAFT ALERT] {cluster description} — {Date}
 Body:       - Which firms published, on what, with links
@@ -18,30 +18,30 @@ Attachment: The generated .docx file
 
 Implementation notes
 --------------------
-* Uses Python's built-in smtplib (no third-party dependency).
-* Sends a multipart/alternative email (text + HTML) with the .docx attached.
-* TLS via STARTTLS on port 587.
+* Uses the SendGrid Web API v3 via httpx (already a project dependency).
+* Plain SMTP is intentionally avoided: Railway runs on Google Cloud Platform,
+  which blocks outbound connections on ports 25, 465, and 587 at the
+  infrastructure level.  HTTPS (port 443) is always open.
 * build_alert_email() and send_alert_email() are separate so the email
   content can be unit-tested without hitting the network.
-* Internally fetches cluster articles from the DB; callers only need to pass
-  SaturationResult + DraftResult.
+* check_smtp_credentials() is kept for API compatibility with scheduler.py
+  but now validates the SendGrid API key instead of opening a socket.
 """
 
+import base64
 import logging
 import mimetypes
-import smtplib
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from email.message import EmailMessage
 from pathlib import Path
 from typing import Optional
+
+import httpx
 
 from src.config import (
     EMAIL_FROM,
     EMAIL_TO,
-    GMAIL_APP_PASSWORD,
-    SMTP_HOST,
-    SMTP_PORT,
+    SENDGRID_API_KEY,
     SW_FIRM_NAME,
 )
 from src import database as db
@@ -49,6 +49,8 @@ from src.cluster_detector import SaturationResult
 from src.draft_generator import DraftResult
 
 logger = logging.getLogger(__name__)
+
+_SENDGRID_URL = "https://api.sendgrid.com/v3/mail/send"
 
 
 # ── Data structures ────────────────────────────────────────────────────────────
@@ -281,131 +283,100 @@ def build_alert_email(
     )
 
 
-# ── SMTP send ──────────────────────────────────────────────────────────────────
+# ── SendGrid HTTP send ─────────────────────────────────────────────────────────
 
-def _build_mime_message(alert: AlertEmail) -> EmailMessage:
+def send_alert_email(alert: AlertEmail) -> bool:
     """
-    Build the EmailMessage object (multipart/alternative + attachment).
-    Separated from the SMTP logic so it can be tested without a mail server.
+    Send the alert email via the SendGrid Web API v3 (HTTPS, port 443).
+
+    Railway/GCP blocks outbound SMTP (ports 25/465/587), so smtplib cannot
+    be used from a hosted container.  The SendGrid HTTP API is unaffected
+    by that restriction.
+
+    Returns True on success, False on any failure.
+    Logs detailed error information on failure.
     """
-    msg = EmailMessage()
-    msg["From"]    = alert.from_addr
-    msg["To"]      = alert.to_addr
-    msg["Subject"] = alert.subject
+    if not SENDGRID_API_KEY:
+        logger.error("SENDGRID_API_KEY is not set — cannot send email")
+        return False
 
-    # Set body: text first, then HTML (RFC 2046 — last part is preferred)
-    msg.set_content(alert.body_text)
-    msg.add_alternative(alert.body_html, subtype="html")
+    # ── Build SendGrid payload ─────────────────────────────────────────────
+    payload: dict = {
+        "personalizations": [{"to": [{"email": alert.to_addr}]}],
+        "from": {"email": alert.from_addr},
+        "subject": alert.subject,
+        "content": [
+            {"type": "text/plain", "value": alert.body_text},
+            {"type": "text/html",  "value": alert.body_html},
+        ],
+    }
 
-    # Attach the .docx
+    # Attach .docx if it exists
     if alert.attachment_path.exists():
-        ctype, encoding = mimetypes.guess_type(str(alert.attachment_path))
-        if ctype is None or encoding is not None:
+        with open(alert.attachment_path, "rb") as fh:
+            encoded = base64.b64encode(fh.read()).decode()
+        ctype, _ = mimetypes.guess_type(str(alert.attachment_path))
+        if not ctype:
             ctype = "application/octet-stream"
-        maintype, subtype = ctype.split("/", 1)
-        with open(alert.attachment_path, "rb") as f:
-            attachment_data = f.read()
-        msg.add_attachment(
-            attachment_data,
-            maintype=maintype,
-            subtype=subtype,
-            filename=alert.attachment_name,
-        )
-        logger.debug(
-            "Attached %s (%d bytes)",
-            alert.attachment_name,
-            len(attachment_data),
-        )
+        payload["attachments"] = [
+            {
+                "content":     encoded,
+                "filename":    alert.attachment_name,
+                "type":        ctype,
+                "disposition": "attachment",
+            }
+        ]
+        logger.debug("Attachment encoded: %s", alert.attachment_name)
     else:
         logger.warning(
             "Attachment not found: %s — sending without attachment",
             alert.attachment_path,
         )
 
-    return msg
-
-
-def _sanitise_app_password(raw: str) -> str:
-    """
-    Strip whitespace (including non-breaking spaces U+00A0 inserted when
-    copy-pasting from the Google Account page) and any non-alphanumeric
-    characters from a Gmail app password.  The valid form is 16 lowercase
-    letters, optionally grouped with spaces for readability.
-    """
-    return "".join(c for c in raw if c.isalnum())
-
-
-def send_alert_email(alert: AlertEmail) -> bool:
-    """
-    Send the alert email via Gmail SMTP (STARTTLS on port 587).
-
-    Returns True on success, False on any failure.
-    Logs detailed error information on failure.
-    """
-    if not GMAIL_APP_PASSWORD:
-        logger.error(
-            "GMAIL_APP_PASSWORD is not set — cannot send email"
-        )
-        return False
-
-    password = _sanitise_app_password(GMAIL_APP_PASSWORD)
-    msg = _build_mime_message(alert)
-
+    # ── POST to SendGrid ───────────────────────────────────────────────────
     try:
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as smtp:
-            smtp.ehlo()
-            smtp.starttls()
-            smtp.ehlo()
-            smtp.login(alert.from_addr, password)
-            smtp.send_message(msg)
-
+        response = httpx.post(
+            _SENDGRID_URL,
+            headers={
+                "Authorization": f"Bearer {SENDGRID_API_KEY}",
+                "Content-Type":  "application/json",
+            },
+            json=payload,
+            timeout=30,
+        )
+        response.raise_for_status()
         logger.info(
-            "Alert email sent: subject=%r  to=%s  attachment=%s",
+            "Alert email sent via SendGrid: subject=%r  to=%s  attachment=%s",
             alert.subject, alert.to_addr, alert.attachment_name,
         )
         return True
 
-    except smtplib.SMTPAuthenticationError as exc:
+    except httpx.HTTPStatusError as exc:
         logger.error(
-            "SMTP authentication failed (check GMAIL_APP_PASSWORD): %s", exc
+            "SendGrid API error %d: %s",
+            exc.response.status_code,
+            exc.response.text,
         )
-    except smtplib.SMTPException as exc:
-        logger.error("SMTP error sending alert email: %s", exc)
-    except OSError as exc:
-        logger.error("Network error reaching SMTP server: %s", exc)
+    except httpx.RequestError as exc:
+        logger.error("Network error reaching SendGrid API: %s", exc)
 
     return False
 
 
-# ── SMTP credential check (no email sent) ─────────────────────────────────────
+# ── Credential check (startup validation) ─────────────────────────────────────
 
 def check_smtp_credentials() -> bool:
     """
-    Verify SMTP credentials by connecting and authenticating only.
-    Does NOT send any email.  Useful for startup validation.
+    Validate that the SendGrid API key is configured.
 
-    Returns True if credentials are valid, False otherwise.
+    Named check_smtp_credentials() for API compatibility with scheduler.py.
+    No network call is made here; the key is validated on first send.
+
+    Returns True if the key is present, False otherwise.
     """
-    if not GMAIL_APP_PASSWORD:
-        logger.error("GMAIL_APP_PASSWORD not set")
+    if not SENDGRID_API_KEY:
+        logger.error("SENDGRID_API_KEY not set — email delivery disabled")
         return False
 
-    password = _sanitise_app_password(GMAIL_APP_PASSWORD)
-
-    try:
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as smtp:
-            smtp.ehlo()
-            smtp.starttls()
-            smtp.ehlo()
-            smtp.login(EMAIL_FROM, password)
-        logger.info("SMTP credentials verified successfully")
-        return True
-
-    except smtplib.SMTPAuthenticationError as exc:
-        logger.error("SMTP authentication failed: %s", exc)
-    except smtplib.SMTPException as exc:
-        logger.error("SMTP error during credential check: %s", exc)
-    except OSError as exc:
-        logger.error("Network error reaching SMTP server: %s", exc)
-
-    return False
+    logger.info("SendGrid API key configured.")
+    return True
