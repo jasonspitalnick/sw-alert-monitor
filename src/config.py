@@ -59,7 +59,7 @@ CLASSIFIER_MODEL: str = "claude-haiku-4-5"
 # Most capable model for generating the ~1,200-word draft alert
 DRAFT_MODEL: str = "claude-opus-4-6"
 DRAFT_TARGET_WORDS: int = 1_200
-DRAFT_BYLINE: str = "By Jason Spitalnick"
+DRAFT_BYLINE: str = ""
 
 # ── Scheduling ─────────────────────────────────────────────────────────────────
 # Times in Mountain Time (America/Denver); weekdays only (Mon–Fri)
